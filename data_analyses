@@ -1,0 +1,565 @@
+# feature reduction -----
+load("data/ACEi_1.RData")
+load("data/beta_1.RData")
+load("data/CCB_1.RData")
+load("data/diuretic_1.RData")
+total <- bind_rows(ACEi_1, beta_1, CCB_1, diuretic_1);nrow(total) #138479
+
+## 1. Missing-data assessment and exclusion ----
+library(VIM)
+library(mice)
+pdf("缺失值.pdf", width = 22, height = 14)  
+aggr(total[,c("sex","age","dwell","ethnicity","work","marriage","education","alco",
+              "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
+              "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
+              "bmi","waist","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk","b_K",
+              "b_Na","hcy","ua","dyslipidemia","drug_time")],
+     col=c("navyblue",'yellow'), border=NA,
+     combined=F,
+     numbers=F, 
+     varheightT=T,
+     sortVars=T,
+     bars=F,
+     prop = T,
+     only.miss=F,
+     labels=c("sex","age","dwell","ethnicity","work","marriage","education","alco",
+              "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
+              "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
+              "bmi","waist","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk","b_K",
+              "b_Na","hcy","ua","dyslipidemia","drug_time"), 
+     cex.axis=0.6, gap=0, 
+     ylab=c("Histogram  of missing data"," "))
+dev.off()
+### 1.1 Remove variables with >20% missingness ----
+pMiss <- function(x){round(sum(is.na(x))/length(x),3)}
+cols_to_delete <- which(apply(total[,c("sex","age","dwell","ethnicity","work","marriage","education","alco",
+                                       "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
+                                       "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
+                                       "bmi","waist","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk","b_K",
+                                       "b_Na","hcy","ua","dyslipidemia","drug_time")], 2, pMiss) > 0.2);cols_to_delete
+# dwell waist   b_K  b_Na   hcy 
+### 1.2 Remove individuals with >20% missingness ----
+total <- total[, !(colnames(total) %in% cols_to_delete)]
+rows_to_delete <- which(apply(total[,c("sex","age","ethnicity","work","marriage","education","alco",
+                                       "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
+                                       "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
+                                       "bmi","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk",
+                                       "ua","dyslipidemia","drug_time")], 1, pMiss) > 0.2);length(rows_to_delete)
+# 294
+uids_to_delete <- total$patient_uid[rows_to_delete]
+ACEi     <- ACEi_1[!ACEi_1$patient_uid %in% uids_to_delete, ]
+beta     <- beta_1[!beta_1$patient_uid %in% uids_to_delete, ]
+CCB      <- CCB_1[!CCB_1$patient_uid %in% uids_to_delete, ]
+diuretic <- diuretic_1[!diuretic_1$patient_uid %in% uids_to_delete, ]
+total      <- total[!total$patient_uid %in% uids_to_delete, ]
+
+### Multiple imputation ----
+library(parallel)
+library(dplyr)
+library(mice)
+responses <- c("sbpTTR")
+
+data_list <- list(
+  ACEi = ACEi,
+  beta = beta,
+  CCB = CCB,
+  diuretic = diuretic
+)
+
+predictors <- c(c("sex","age","ethnicity","work","marriage","education","alco",
+                  "smk","sport","dNa","mental","Fhis_hype","hype_duration_5","hype_duration_10",
+                  "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
+                  "bmi","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk",
+                  "ua","dyslipidemia","drug_time"))
+
+mice_impute <- function(df) {
+  uid <- df$patient_uid
+  vars_needed <- c(predictors, responses)
+  df_sub <- df[, vars_needed]
+  
+  df_sub[df_sub == ""] <- NA
+  df_sub <- df_sub %>% mutate(across(where(is.character), as.factor))
+  
+  meth <- make.method(df_sub)
+  
+  for(v in names(df_sub)) {
+    if(is.numeric(df_sub[[v]])) {
+      meth[v] <- "pmm"
+    } else if(nlevels(as.factor(df_sub[[v]])) == 2) {
+      meth[v] <- "logreg"  
+    } else {
+      meth[v] <- "polyreg"  
+    }
+  }
+  
+  imp <- mice(df_sub, m = 5, method = meth, maxit = 10, seed = 123)
+  
+  df_completed <- complete(imp, 1)
+  
+  df_completed <- lapply(df_completed, function(dat) {
+    dplyr::bind_cols(patient_uid = uid, dat)
+  })
+  
+  return(df_completed)
+}
+
+ncores <- 2
+cl <- makeCluster(ncores)
+clusterExport(cl, varlist = c("mice_impute", "predictors", "responses"))
+clusterEvalQ(cl, { library(dplyr); library(mice) })
+data_list_imp <- parLapply(cl, data_list, mice_impute)
+stopCluster(cl)
+
+save(data_list_imp, file = "data_list_imp.Rdata")
+
+
+
+
+# 2. boruta  ----
+library(Boruta)
+predictors <- c(c("sex","age","ethnicity","work","marriage","education","alco",
+                  "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
+                  "dbp_arv","sbp_arv",
+                  "bmi","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi",
+                  "ua","dyslipidemia","drug_time"))
+
+boruta_results <- list()
+boruta_plots <- list()
+
+for(df_name in names(data_list_imp)){
+  df <- data_list_imp[[df_name]]
+  formula <- as.formula(paste("sbp_control_bad ~", paste(predictors, collapse = " + ")))
+  
+  set.seed(123)  
+  KKK <- Boruta(formula, data = df, ntree = 1000, maxRuns = 50)  
+  stats <- attStats(KKK)
+  importance_df <- data.frame(
+    Variable = rownames(stats),
+    importance = stats[, "meanImp"],
+    stringsAsFactors = FALSE
+  )
+  
+  boruta_results[[df_name]] <- importance_df
+  
+  pdf_filename <- paste0("Boruta_", df_name, ".pdf")
+  pdf(pdf_filename, width = 16, height = 10)
+  plot(KKK, main = paste("Boruta Importance -", df_name), cex.axis = 1.5, las = 2)
+  dev.off()
+}
+save(boruta_results,file = "boruta.Rdata")
+
+# 3. grid search + XGBoost ----
+library(xgboost)
+library(dplyr)
+library(Ckmeans.1d.dp)
+library(Matrix)
+library(caret)
+
+myCl <- makeCluster(detectCores() - 1)
+registerDoParallel(myCl)
+
+predictors <- c("sex","age","ethnicity","work","marriage","education","alco",
+                "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
+                "dbp_arv","sbp_arv","bmi","HR","AF","cvd","hf",
+                "stroke_w_o_TIA","DM","ckdepi","ua","dyslipidemia","drug_time")
+
+xgb.grid <- expand.grid(
+  nrounds = c(25, 50, 100),
+  eta = c(0.01, 0.05),
+  max_depth = 3,
+  gamma = 0,
+  subsample = c(0.7, 0.8, 0.9),
+  min_child_weight = c(1, 2),
+  colsample_bytree = 1
+)
+
+xgb.control <- trainControl(
+  method = "cv",
+  number = 5,
+  verboseIter = TRUE,
+  returnData = FALSE,
+  returnResamp = "none",
+  classProbs = TRUE,
+  summaryFunction = caret::twoClassSummary,
+  allowParallel = TRUE
+)
+
+best_params_list <- list()
+
+for(name in names(data_list_imp)){ 
+  cat("Processing:", name, "\n") 
+  df <- data_list_imp[[name]] 
+  y_train <- factor(df$sbp_control_bad, levels = c(0,1), labels = c("class0", "class1")) 
+  X_train <- df[, predictors] 
+  X_train_mat <- model.matrix(~ . -1, data = X_train) 
+  
+  # Grid search + CV 
+  xgb.train.model <- train( 
+    x = X_train_mat, 
+    y = y_train, 
+    method = "xgbTree", 
+    trControl = xgb.control, 
+    tuneGrid = xgb.grid,
+    metric = "ROC") 
+  best_params <- xgb.train.model$bestTune 
+  dtrain <- xgb.DMatrix(data = X_train_mat, label = as.numeric(y_train) - 1)
+  
+  params <- list(
+    eta = best_params$eta,
+    max_depth = best_params$max_depth,
+    gamma = best_params$gamma,
+    min_child_weight = best_params$min_child_weight,
+    subsample = best_params$subsample,
+    colsample_bytree = best_params$colsample_bytree,
+    objective = "binary:logistic",
+    eval_metric = "auc",
+    nthread = detectCores() - 1
+  )
+  
+  xgb.cv.model <- xgb.cv(
+    params = params,
+    data = dtrain,
+    nrounds = 5000,
+    nfold = 5,
+    showsd = TRUE,
+    metrics = "auc",
+    stratified = TRUE,
+    verbose = TRUE,
+    print_every_n = 10L,
+    early_stopping_rounds = 100
+  )
+  
+  best_nrounds <- xgb.cv.model$best_iteration
+  cat("Best nrounds for", name, ":", best_nrounds, "\n")
+  best_params_list[[name]] <- list(
+    bestTune = best_params,
+    best_nrounds = best_nrounds
+  )
+  
+  
+  final_model <- xgboost(
+    data = X_train_mat,
+    label = as.numeric(y_train) - 1,
+    max.depth = best_params$max_depth,
+    eta = best_params$eta,
+    nrounds = best_nrounds,
+    gamma = best_params$gamma,
+    min_child_weight = best_params$min_child_weight,
+    subsample = best_params$subsample,
+    colsample_bytree = best_params$colsample_bytree,
+    objective = "binary:logistic",
+    eval_metric = "auc",
+    verbose = 0,
+    nthread = detectCores() - 1
+  )
+  
+  importance_matrix <- xgb.importance(feature_names = colnames(X_train_mat), model = final_model)
+  
+  importance_matrix$OriginalFeature <- sapply(importance_matrix$Feature, function(x) {
+    matched <- predictors[sapply(predictors, function(p) grepl(p, x))]
+    if(length(matched) > 0) matched[1] else x
+  })
+  
+  importance_summary <- importance_matrix %>%
+    group_by(OriginalFeature) %>%
+    summarise(TotalGain = sum(Gain)) %>%
+    arrange(desc(TotalGain))
+  
+  write.csv(importance_summary, file = paste0("XGB_importance_", name, ".csv"), row.names = FALSE)
+  write.csv(importance_matrix, file = paste0("XGB_importance_c_", name, ".csv"), row.names = FALSE)
+  
+  pdf(file = paste0("XGB_importance_", name, ".pdf"), width = 10, height = 8)
+  importance_plot <- importance_matrix[order(-importance_matrix$Gain), ]
+  xgb.plot.importance(importance_plot, rel_to_first = TRUE, xlab = "Relative Gain",
+                      main = paste("XGBoost Feature Importance -", name))
+  dev.off()
+}
+
+stopCluster(myCl)
+saveRDS(best_params_list, file = "best_params_list.rds")
+
+# 3.1 XGBoost - RFE ----
+library(xgboost)
+library(parallel)
+library(doParallel)
+
+myCl <- makeCluster(detectCores() - 1)
+registerDoParallel(myCl)
+set.seed(123)
+
+predictors <- c("sex","age","ethnicity","work","marriage","education","alco",
+                "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
+                "dbp_arv","sbp_arv","bmi","HR","AF","cvd","hf",
+                "stroke_w_o_TIA","DM","ckdepi","ua","dyslipidemia","drug_time")
+best_params_list <- readRDS("best_params_list.rds")
+
+rfe_results <- list()
+for(drug_name in names(data_list_imp)){
+  cat("Running RFE for:", drug_name, "\n")
+  
+  df <- data_list_imp[[drug_name]]
+  y_train <- df$sbp_control_bad
+  X_train <- df[, predictors]
+  X_train_mat <- model.matrix(~ . -1, data = X_train)
+  
+  bestTune <- best_params_list[[drug_name]]$bestTune
+  best_nrounds <- best_params_list[[drug_name]]$best_nrounds
+  
+  remaining_features <- colnames(X_train_mat)
+  auc_history <- c()
+  removed_order <- c()
+  
+  repeat {
+    # DMatrix
+    dtrain <- xgb.DMatrix(data = X_train_mat[, remaining_features, drop = FALSE],
+                          label = y_train)
+    cv <- xgb.cv(
+      params = list(
+        eta = bestTune$eta,
+        max_depth = bestTune$max_depth,
+        gamma = bestTune$gamma,
+        min_child_weight = bestTune$min_child_weight,
+        subsample = bestTune$subsample,
+        colsample_bytree = bestTune$colsample_bytree,
+        objective = "binary:logistic",
+        eval_metric = "auc",
+        nthread = detectCores() - 1
+      ),
+      data = dtrain,
+      nrounds = best_nrounds,
+      nfold = 5,
+      stratified = TRUE,
+      verbose = 0,
+      early_stopping_rounds = 50
+    )
+    
+    auc_history <- c(auc_history, max(cv$evaluation_log$test_auc_mean))
+    
+    model <- xgboost(
+      data = dtrain,
+      max.depth = bestTune$max_depth,
+      eta = bestTune$eta,
+      nrounds = best_nrounds,
+      gamma = bestTune$gamma,
+      min_child_weight = bestTune$min_child_weight,
+      subsample = bestTune$subsample,
+      colsample_bytree = bestTune$colsample_bytree,
+      objective = "binary:logistic",
+      eval_metric = "auc",
+      verbose = 0,
+      nthread = detectCores() - 1
+    )
+    
+    importance_matrix <- xgb.importance(feature_names = remaining_features, model = model)
+    min_gain_feat <- importance_matrix$Feature[which.min(importance_matrix$Gain)]
+    
+    if(length(remaining_features) <= 2) break
+    remaining_features <- setdiff(remaining_features, min_gain_feat)
+    removed_order <- c(removed_order, min_gain_feat)
+    
+    cat("Removed:", min_gain_feat, "Remaining features:", length(remaining_features),
+        "Current CV AUC:", round(tail(auc_history,1),4), "\n")
+  }
+  removed_order <- c(removed_order, remaining_features)
+  
+  rfe_results[[drug_name]] <- list(
+    final_features = remaining_features,
+    auc_history = auc_history,
+    removed_order = removed_order
+  )
+}
+
+stopCluster(myCl)
+saveRDS(rfe_results, file = "xgb_rfe_results_dynamicTune.rds")
+
+## 3.2 RFE+XGB plot ----
+library(xgboost)
+library(dplyr)
+library(Ckmeans.1d.dp)
+drug_names <- c("ACEi", "beta", "CCB", "diuretic")
+
+importance_summary_list <- list()
+
+for(drug in drug_names){
+  imp_df <- read_csv(paste0("XGB_importance_c_", drug, ".csv"))
+  importance_summary_list[[drug]] <- imp_df
+}
+
+
+for(drug_name in drug_names){
+  cat("Plotting RFE for:", drug_name, "\n")
+  feature_order <- switch(drug_name,
+                          "ACEi" = gain_ACEi,
+                          "beta" = gain_beta,
+                          "CCB" = gain_CCB,
+                          "diuretic" = gain_diuretic)
+  
+  
+  tmp_gain <- importance_summary_list[[drug_name]]$Gain
+  names(tmp_gain) <- importance_summary_list[[drug_name]]$Feature
+  barplot_height <- tmp_gain[feature_order]
+  barplot_height <- barplot_height[!is.na(barplot_height)]
+  feature_order <- names(barplot_height) 
+  
+  auc_history <- rfe_results[[drug_name]]$auc_history
+  x_vals <- seq(from = length(barplot_height), to = length(barplot_height) - length(auc_history) + 1, by = -1)
+  
+  pdf(file = paste0("RFE_XGB_", drug_name, ".pdf"), width = 10, height = 8)
+  par(mar = c(10, 4, 4, 4))  
+  bar_positions <- barplot(barplot_height,
+                           col = "steelblue1",
+                           names.arg = NA,
+                           ylim = c(0, max(barplot_height)*1.2),
+                           main = paste("Feature Elimination -", drug_name),
+                           ylab = "Feature Gain")
+  text(x = bar_positions, 
+       y = par("usr")[3] - max(barplot_height)*0.05, 
+       labels = feature_order, 
+       srt = 45,  
+       adj = 1,   
+       xpd = TRUE, 
+       cex = 0.8)
+  
+  top_line <- max(barplot_height)*1.15
+  text(x = bar_positions, 
+       y = rep(top_line, length(bar_positions)), 
+       labels = x_vals,
+       col = "black", 
+       cex = 1)
+  
+  par(new = TRUE)
+  plot(x_vals, auc_history,
+       type = "p", pch = 16, col = "black",
+       axes = FALSE, xlab = "", ylab = "",
+       ylim = c(min(auc_history)*0.95, max(auc_history)*1.05))
+  axis(side = 4, col.axis = "black", cex.axis = 0.8)
+  mtext("RFE AUROC", side = 4, line = 2.5, col = "black")
+  
+  suggestion_strictness <- 0.05
+  if(!is.null(suggestion_strictness)){
+    tmp.median.AUROCs <- auc_history
+    for(i in suggestion_strictness){
+      AUC_cutoff <- ((1 - i) * (max(tmp.median.AUROCs) - min(tmp.median.AUROCs))) + min(tmp.median.AUROCs)
+      feature_cutoff <- max(which(tmp.median.AUROCs >= AUC_cutoff)) + 0.5
+      
+      abline(v = feature_cutoff, col = "red", lty = 2)
+      tmp.cutoff.msg <- paste("Strictness:", round(i, 2))
+      
+      tmp.strictness.bg <- paste(rep("-", nchar(tmp.cutoff.msg) - 2), collapse = "")
+      mtext(text = tmp.strictness.bg,
+            side = 3,
+            at = feature_cutoff,
+            line = -12,
+            cex = 0.8,
+            col = "white",
+            padj = 0.56,
+            las = 2,
+            family = "mono",
+            font = 2)
+      mtext(text = tmp.cutoff.msg,
+            side = 3,
+            at = feature_cutoff,
+            line = -12,
+            cex = 0.8,
+            col = "red",
+            las = 2,
+            family = "mono",
+            font = 2)
+    }
+  }
+  dev.off()
+}
+
+
+
+# 4. SIVS (LASSO+glmnet) ----
+library(sivs)
+library(varhandle)
+library(glmnet)
+library(foreach)
+library(doParallel)
+normalize_data <- function(df, predictors){
+  df_num <- df[, predictors]
+  
+  for(col in colnames(df_num)){
+    if(is.factor(df_num[[col]]) | is.character(df_num[[col]])){
+      df_num[[col]] <- as.numeric(as.factor(df_num[[col]]))
+    }
+    rng <- range(df_num[[col]], na.rm = TRUE)
+    if(diff(rng) > 0){
+      df_num[[col]] <- (df_num[[col]] - rng[1]) / diff(rng)
+    } else {
+      df_num[[col]] <- 0  
+    }
+  }
+  
+  return(df_num)
+}
+
+run_sivs_for_all <- function(data_list, predictors, iter.count = 100, nfolds = 10){
+  results <- list()
+  
+  for(drug in names(data_list)){
+    cat("Running SIVS for:", drug, "\n")
+    
+    df_sub <- data_list[[drug]][, c("sbp_control_bad", predictors)]
+    RESP <- as.factor(df_sub[["sbp_control_bad"]])
+    DATA <- as.matrix(normalize_data(df_sub, predictors))
+    
+    sivs_obj <- sivs(x = DATA, y = RESP,
+                     iter.count = iter.count,
+                     nfolds = nfolds,
+                     parallel.cores = "grace")
+    
+    suggested <- sivs::suggest(sivs_obj)
+    results[[drug]] <- list(
+      sivs_vimp = sivs_obj$vimp,
+      suggested_features = suggested
+    )
+    
+    pdf(paste0("SIVS_plot_", drug, ".pdf"), width = 8, height = 6)
+    layout(mat = matrix(c(1,2,
+                          3,3),
+                        nrow = 2, byrow = TRUE))
+    plot(sivs_obj)
+    layout(1)
+    dev.off()
+  }
+  
+  return(results)
+}
+
+sivs_results_all <- run_sivs_for_all(data_list_imp, predictors)
+
+merge_sivs_results <- function(sivs_results_all){
+  merged_list <- list()
+  
+  for(drug in names(sivs_results_all)){
+    vimp <- sivs_results_all[[drug]]$sivs_vimp
+    suggested <- sivs_results_all[[drug]]$suggested_features
+    
+    if(is.vector(vimp)) {
+      df_vimp <- data.frame(Feature = names(vimp),
+                            VIMP = as.numeric(vimp))
+    } else {
+      df_vimp <- vimp
+      if(!all(c("Feature","VIMP") %in% colnames(df_vimp))){
+        df_vimp <- data.frame(Feature = rownames(df_vimp),
+                              VIMP = df_vimp[,1])
+      }
+    }
+    
+    df_vimp$Suggested <- ifelse(df_vimp$Feature %in% suggested, TRUE, FALSE)
+    df_vimp$Drug <- drug
+    
+    merged_list[[drug]] <- df_vimp
+  }
+  
+  merged_df <- do.call(rbind, merged_list)
+  rownames(merged_df) <- NULL
+  merged_df <- merged_df %>% arrange(Drug, desc(VIMP))
+  return(merged_df)
+}
+
+sivs_summary_df <- merge_sivs_results(sivs_results_all)
+write.csv(sivs_summary_df,"sivs.csv")
