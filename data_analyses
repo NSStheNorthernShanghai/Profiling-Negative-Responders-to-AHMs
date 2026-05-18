@@ -45,7 +45,6 @@ rows_to_delete <- which(apply(total[,c("sex","age","ethnicity","work","marriage"
                                        "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
                                        "bmi","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk",
                                        "ua","dyslipidemia","drug_time")], 1, pMiss) > 0.2);length(rows_to_delete)
-# 294
 uids_to_delete <- total$patient_uid[rows_to_delete]
 ACEi     <- ACEi_1[!ACEi_1$patient_uid %in% uids_to_delete, ]
 beta     <- beta_1[!beta_1$patient_uid %in% uids_to_delete, ]
