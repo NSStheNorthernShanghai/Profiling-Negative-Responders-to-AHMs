@@ -562,3 +562,127 @@ merge_sivs_results <- function(sivs_results_all){
 
 sivs_summary_df <- merge_sivs_results(sivs_results_all)
 write.csv(sivs_summary_df,"sivs.csv")
+
+for(drug_name in names(data_list_imp)) {
+  
+  df <- data_list_imp[[drug_name]]
+  formula_str <- paste("sbp_control_bad ~", paste(predictors, collapse = " + "))
+  model_std <- glm(as.formula(formula_str), data = df, family = binomial)
+  
+  res_std <- broom::tidy(model_std) %>%
+    mutate(x = statistic^2) %>%
+    filter(term != "(Intercept)")
+  res_std$var_base <- sapply(res_std$term, function(t) {
+    matched <- predictors[sapply(predictors, function(p) grepl(p, t))]
+    if(length(matched) > 0) matched[1] else t
+  })
+  
+  importance_summary <- res_std %>%
+    group_by(var_base) %>%
+    summarise(TotalImportance = sum(x, na.rm = TRUE)) %>%
+    arrange(desc(TotalImportance))
+  
+  write.csv(importance_summary, file = paste0("logi_", drug_name, ".csv"), row.names = FALSE)
+  
+}
+
+# 5. importance  ----
+load("boruta.Rdata")
+XGB_importance_CCB <- read_csv("XGB_importance_CCB.csv")
+XGB_importance_ACEi <- read_csv("XGB_importance_ACEi.csv")
+XGB_importance_beta <- read_csv("XGB_importance_beta.csv")
+XGB_importance_diuretic <- read_csv("XGB_importance_diuretic.csv")
+logi_ACEi <- read_csv("logi_ACEi.csv")
+logi_CCB <- read_csv("logi_CCB.csv")
+logi_diuretic <- read_csv("logi_diuretic.csv")
+logi_beta <- read_csv("logi_beta.csv")
+
+
+merge_four_importance <- function(boruta_df, logi_df, xgb_df) {
+  
+  # Boruta
+  boruta_clean <- dplyr::select(boruta_df, Variable, importance) %>%
+    dplyr::rename(Feature = Variable, Boruta_importance = importance)
+  
+  # SIVS
+  logi_clean <- dplyr::select(logi_df, var_base, TotalImportance) %>%
+    dplyr::rename(Feature = var_base, Logi_importance = TotalImportance)
+  
+  # XGBoost
+  xgb_clean <- dplyr::select(xgb_df, OriginalFeature, TotalGain) %>%
+    dplyr::rename(Feature = OriginalFeature, XGB_importance = TotalGain)
+  
+  # merged
+  merged <- boruta_clean %>%
+    dplyr::full_join(logi_clean, by = "Feature") %>%
+    dplyr::full_join(xgb_clean, by = "Feature") 
+
+  return(merged)
+}
+
+
+merged_all_list <- list(
+  ACEi     = merge_four_importance(boruta_results$ACEi, logi_ACEi, XGB_importance_ACEi),
+  beta     = merge_four_importance(boruta_results$beta, logi_beta, XGB_importance_beta),
+  CCB      = merge_four_importance(boruta_results$CCB, logi_CCB, XGB_importance_CCB),
+  diuretic = merge_four_importance(boruta_results$diuretic, logi_diuretic, XGB_importance_diuretic)
+)
+
+merged_all <- dplyr::bind_rows(
+  lapply(names(merged_all_list), function(drug) {
+    merged_all_list[[drug]] %>% dplyr::mutate(Drug = drug)
+  })
+)%>%
+  mutate(across(where(is.numeric), ~ tidyr::replace_na(.x, 0)))
+
+write.csv(merged_all,"importance_total.csv")
+
+
+
+merged_long <- merged_all %>%
+  pivot_longer(
+    cols = c(Boruta_importance, Logi_importance , XGB_importance),
+    names_to = "Importance_Type",
+    values_to = "Importance"
+  ) 
+
+merged_long <- merged_long %>%
+  group_by(Drug, Importance_Type) %>%
+  mutate(
+    minv = min(Importance, na.rm = TRUE),
+    maxv = max(Importance, na.rm = TRUE),
+    Importance_norm = if_else(
+      maxv > minv,
+      (Importance - minv) / (maxv - minv),
+      0
+    )
+  ) %>%
+  ungroup() %>%
+  dplyr::select(-minv, -maxv)
+
+merged_long <- merged_long %>%
+  group_by(Drug, Feature) %>%
+  mutate(Total_Imp_norm = sum(Importance_norm, na.rm = TRUE)) %>%
+  ungroup() %>%
+  arrange(Drug, desc(Total_Imp_norm)) %>%
+  mutate(Feature = factor(Feature, levels = unique(Feature)))
+
+ggplot(merged_long, aes(x = Importance_Type, y = Feature, fill = Importance_norm)) +
+  geom_tile(color = "white") +
+  facet_wrap(~Drug, scales = "free_y") +
+  scale_fill_gradient(low = "white", high = "steelblue", na.value = "grey90") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    axis.text.y = element_text(size = 8),
+    strip.text = element_text(face = "bold", size = 12),
+    panel.grid = element_blank()
+  ) +
+  labs(
+    title = "Normalized Feature Importance Heatmap Across Drugs",
+    x = "Importance Type",
+    y = "Feature",
+    fill = "Normalized Importance (0-1)"
+  )
+
+ggsave("feature_importance_heatmap.pdf", width = 12, height = 8)
