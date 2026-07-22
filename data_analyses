@@ -112,7 +112,7 @@ boruta_results <- list()
 boruta_plots <- list()
 for(df_name in names(completed_long_list)){
   df <- completed_long_list[[df_name]]
-  formula <- as.formula(paste("sbpTTR1 ~", paste(predictors, collapse = " + ")))
+  formula <- as.formula(paste("sbpTTR ~", paste(predictors, collapse = " + ")))
   
   set.seed(123)
   KKK <- Boruta(formula, data = df, ntree = 1000, maxRuns = 70)
@@ -168,7 +168,7 @@ for(name in names(data_list)){
   cat("Processing:", name, "\n") 
   
   df <- data_list[[name]] 
-  y_train <- df[["sbpTTR1"]]
+  y_train <- df[["sbpTTR"]]
   X_train <- df[, predictors] 
   X_train_mat <- model.matrix(~ ., data = X_train)
   X_train_mat <- X_train_mat[, colnames(X_train_mat) != "(Intercept)", drop = FALSE] 
@@ -281,7 +281,7 @@ for(drug_name in names(data_list)){
   cat("Running RFE for:", drug_name, "\n")
   
   df <- data_list[[name]] 
-  y_train <- df[["sbpTTR1"]]
+  y_train <- df[["sbpTTR"]]
   X_train <- df[, predictors] 
   X_train_mat <- model.matrix(~ . -1, data = X_train) 
   
@@ -401,7 +401,7 @@ for(drug_name in drug_names){
        y = par("usr")[3] - max(barplot_height)*0.05, 
        labels = feature_order, 
        srt = 45,  
-       adj = 1,   # 右对齐
+       adj = 1,   
        xpd = TRUE, 
        cex = 0.8)
   
