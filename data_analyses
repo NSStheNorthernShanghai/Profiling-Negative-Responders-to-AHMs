@@ -3,82 +3,39 @@ load("data/ACEi_1.RData")
 load("data/beta_1.RData")
 load("data/CCB_1.RData")
 load("data/diuretic_1.RData")
-total <- bind_rows(ACEi_1, beta_1, CCB_1, diuretic_1);nrow(total) #138479
+total <- bind_rows(ACEi_1, beta_1, CCB_1, diuretic_1)
 
 ## 1. Missing-data assessment and exclusion ----
-library(VIM)
-library(mice)
-pdf("缺失值.pdf", width = 22, height = 14)  
-aggr(total[,c("sex","age","dwell","ethnicity","work","marriage","education","alco",
-              "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
-              "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
-              "bmi","waist","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk","b_K",
-              "b_Na","hcy","ua","dyslipidemia","drug_time")],
-     col=c("navyblue",'yellow'), border=NA,
-     combined=F,
-     numbers=F, 
-     varheightT=T,
-     sortVars=T,
-     bars=F,
-     prop = T,
-     only.miss=F,
-     labels=c("sex","age","dwell","ethnicity","work","marriage","education","alco",
-              "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
-              "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
-              "bmi","waist","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk","b_K",
-              "b_Na","hcy","ua","dyslipidemia","drug_time"), 
-     cex.axis=0.6, gap=0, 
-     ylab=c("Histogram  of missing data"," "))
-dev.off()
-### 1.1 Remove variables with >20% missingness ----
 pMiss <- function(x){round(sum(is.na(x))/length(x),3)}
-cols_to_delete <- which(apply(total[,c("sex","age","dwell","ethnicity","work","marriage","education","alco",
-                                       "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
-                                       "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
-                                       "bmi","waist","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk","b_K",
-                                       "b_Na","hcy","ua","dyslipidemia","drug_time")], 2, pMiss) > 0.2);cols_to_delete
-# dwell waist   b_K  b_Na   hcy 
-### 1.2 Remove individuals with >20% missingness ----
+cols_to_delete <- which(apply(total[,Features], 2, pMiss) > 0.2);cols_to_delete
 total <- total[, !(colnames(total) %in% cols_to_delete)]
-rows_to_delete <- which(apply(total[,c("sex","age","ethnicity","work","marriage","education","alco",
-                                       "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
-                                       "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
-                                       "bmi","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk",
-                                       "ua","dyslipidemia","drug_time")], 1, pMiss) > 0.2);length(rows_to_delete)
+rows_to_delete <- which(apply(total[,Features], 1, pMiss) > 0.2);length(rows_to_delete)
 uids_to_delete <- total$patient_uid[rows_to_delete]
 ACEi     <- ACEi_1[!ACEi_1$patient_uid %in% uids_to_delete, ]
 beta     <- beta_1[!beta_1$patient_uid %in% uids_to_delete, ]
 CCB      <- CCB_1[!CCB_1$patient_uid %in% uids_to_delete, ]
 diuretic <- diuretic_1[!diuretic_1$patient_uid %in% uids_to_delete, ]
-total      <- total[!total$patient_uid %in% uids_to_delete, ]
+total    <- total[!total$patient_uid %in% uids_to_delete, ]
 
 ### Multiple imputation ----
-library(parallel)
-library(dplyr)
-library(mice)
 responses <- c("sbpTTR")
+data_list <- split(total, total$Drug)
 
-data_list <- list(
-  ACEi = ACEi,
-  beta = beta,
-  CCB = CCB,
-  diuretic = diuretic
-)
+predictors <-c("sex","age","Province","ethnicity","Occupation","Marital_Status","Education_Level","Excessive_Alcohol_Use",
+               "Smoking_Status","Physically_Active","Mental_State","Family_History_of_HTN",
+               "HTN_duration_5years","HTN_duration_10years",
+               "dbp_arv","dbp_sd","meanDBP","dbp_cv",
+               "bmi","HR","Atrial_Fibrillation","Coronary_Artery_Disease","Heart_Failure","Stroke",
+               "Diabetes_Mellitus","eGFR","CKD",
+               "dyslipidemia")
 
-predictors <- c(c("sex","age","ethnicity","work","marriage","education","alco",
-                  "smk","sport","dNa","mental","Fhis_hype","hype_duration_5","hype_duration_10",
-                  "dbp_arv","dbp_sd","dbp_cv","sbp_arv","sbp_sd","sbp_cv",
-                  "bmi","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi","CKD_risk",
-                  "ua","dyslipidemia","drug_time"))
-
-mice_impute <- function(df) {
+mice_impute <- function(df, seed = 123) {
   uid <- df$patient_uid
   vars_needed <- c(predictors, responses)
-  df_sub <- df[, vars_needed]
-  
+  df_sub <- df[, vars_needed, drop = FALSE]
+  df_sub <- df_sub %>% 
+    mutate(across(where(is.character), as.factor))
   df_sub[df_sub == ""] <- NA
-  df_sub <- df_sub %>% mutate(across(where(is.character), as.factor))
-  
   meth <- make.method(df_sub)
   
   for(v in names(df_sub)) {
@@ -91,46 +48,74 @@ mice_impute <- function(df) {
     }
   }
   
-  imp <- mice(df_sub, m = 5, method = meth, maxit = 10, seed = 123)
+  imp <- mice(df_sub, m = 2, method = meth, maxit = 10, seed = seed, printFlag = FALSE)
   
-  df_completed <- complete(imp, 1)
+  fit_formula <- as.formula(
+    paste(responses, "~", paste(predictors, collapse = " + "))
+  )
   
-  df_completed <- lapply(df_completed, function(dat) {
-    dplyr::bind_cols(patient_uid = uid, dat)
+  models <- lapply(1:imp$m, function(k) {
+    completed_k <- complete(imp, k)
+    lm(fit_formula, data = completed_k)
   })
   
-  return(df_completed)
+  pooled <- pool(as.mira(models))
+  pooled_summary <- summary(pooled, conf.int = TRUE)
+  completed_long <- complete(imp, action = "long", include = FALSE)
+  
+  return(list(
+    imp = imp,
+    models = models,
+    pooled = pooled,
+    pooled_summary = pooled_summary,
+    completed_long = completed_long
+  ))
 }
 
-ncores <- 2
+
+ncores <- 3
 cl <- makeCluster(ncores)
-clusterExport(cl, varlist = c("mice_impute", "predictors", "responses"))
-clusterEvalQ(cl, { library(dplyr); library(mice) })
-data_list_imp <- parLapply(cl, data_list, mice_impute)
+clusterExport(cl, varlist = c("mice_impute", "predictors", "responses", "data_list"),envir = environment())
+clusterEvalQ(cl, {
+  library(dplyr)
+  library(mice)
+})
+data_list_imp <- parLapply(cl, seq_along(data_list),
+                           function(i) {
+                             mice_impute(data_list[[i]], seed = 123 + i)
+                           })
 stopCluster(cl)
 
-save(data_list_imp, file = "data_list_imp.Rdata")
+names(data_list_imp) <- names(data_list)
+completed_long_list <- lapply(names(data_list_imp), function(x) {
+  data_list_imp[[x]]$completed_long %>%
+    mutate(AHM = x, .before = 1)
+})
+
+names(completed_long_list) <- names(data_list_imp)
+save(completed_long_list, file = "completed_long_list.Rdata")
 
 
 
 
 # 2. boruta  ----
 library(Boruta)
-predictors <- c(c("sex","age","ethnicity","work","marriage","education","alco",
-                  "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
-                  "dbp_arv","sbp_arv",
-                  "bmi","HR","AF","cvd","hf","stroke_w_o_TIA","DM","ckdepi",
-                  "ua","dyslipidemia","drug_time"))
+predictors <- c("sex","age","ethnicity","Occupation","Marital_Status","Education_Level","Excessive_Alcohol_Use",
+                "Smoking_Status","Physically_Active","Mental_State","Family_History_of_HTN",
+                "HTN_duration_10years",
+                "dbp_arv",
+                "bmi","HR","Atrial_Fibrillation","Coronary_Artery_Disease","Heart_Failure","Stroke",
+                "Diabetes_Mellitus","eGFR",
+                "dyslipidemia")  
 
 boruta_results <- list()
 boruta_plots <- list()
-
-for(df_name in names(data_list_imp)){
-  df <- data_list_imp[[df_name]]
-  formula <- as.formula(paste("sbp_control_bad ~", paste(predictors, collapse = " + ")))
+for(df_name in names(completed_long_list)){
+  df <- completed_long_list[[df_name]]
+  formula <- as.formula(paste("sbpTTR1 ~", paste(predictors, collapse = " + ")))
   
-  set.seed(123)  
-  KKK <- Boruta(formula, data = df, ntree = 1000, maxRuns = 50)  
+  set.seed(123)
+  KKK <- Boruta(formula, data = df, ntree = 1000, maxRuns = 70)
   stats <- attStats(KKK)
   importance_df <- data.frame(
     Variable = rownames(stats),
@@ -154,23 +139,19 @@ library(Ckmeans.1d.dp)
 library(Matrix)
 library(caret)
 
-myCl <- makeCluster(detectCores() - 1)
+myCl <- makeCluster(detectCores() - 3)
 registerDoParallel(myCl)
 
-predictors <- c("sex","age","ethnicity","work","marriage","education","alco",
-                "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
-                "dbp_arv","sbp_arv","bmi","HR","AF","cvd","hf",
-                "stroke_w_o_TIA","DM","ckdepi","ua","dyslipidemia","drug_time")
-
 xgb.grid <- expand.grid(
-  nrounds = c(25, 50, 100),
-  eta = c(0.01, 0.05),
-  max_depth = 3,
-  gamma = 0,
-  subsample = c(0.7, 0.8, 0.9),
-  min_child_weight = c(1, 2),
-  colsample_bytree = 1
+  nrounds = c(300, 500, 800),
+  max_depth = c(4, 6, 8),
+  eta = c(0.05, 0.1, 0.2),
+  subsample = c(0.6, 0.8),
+  colsample_bytree = c(0.4, 0.6, 0.8),
+  min_child_weight = c(1, 3, 5),
+  gamma = c(0, 1)
 )
+
 
 xgb.control <- trainControl(
   method = "cv",
@@ -178,19 +159,19 @@ xgb.control <- trainControl(
   verboseIter = TRUE,
   returnData = FALSE,
   returnResamp = "none",
-  classProbs = TRUE,
-  summaryFunction = caret::twoClassSummary,
   allowParallel = TRUE
 )
 
 best_params_list <- list()
 
-for(name in names(data_list_imp)){ 
+for(name in names(data_list)){ 
   cat("Processing:", name, "\n") 
-  df <- data_list_imp[[name]] 
-  y_train <- factor(df$sbp_control_bad, levels = c(0,1), labels = c("class0", "class1")) 
+  
+  df <- data_list[[name]] 
+  y_train <- df[["sbpTTR1"]]
   X_train <- df[, predictors] 
-  X_train_mat <- model.matrix(~ . -1, data = X_train) 
+  X_train_mat <- model.matrix(~ ., data = X_train)
+  X_train_mat <- X_train_mat[, colnames(X_train_mat) != "(Intercept)", drop = FALSE] 
   
   # Grid search + CV 
   xgb.train.model <- train( 
@@ -199,9 +180,10 @@ for(name in names(data_list_imp)){
     method = "xgbTree", 
     trControl = xgb.control, 
     tuneGrid = xgb.grid,
-    metric = "ROC") 
+    metric = "RMSE")
+  
   best_params <- xgb.train.model$bestTune 
-  dtrain <- xgb.DMatrix(data = X_train_mat, label = as.numeric(y_train) - 1)
+  dtrain <- xgb.DMatrix(data = X_train_mat, label = y_train)
   
   params <- list(
     eta = best_params$eta,
@@ -210,19 +192,21 @@ for(name in names(data_list_imp)){
     min_child_weight = best_params$min_child_weight,
     subsample = best_params$subsample,
     colsample_bytree = best_params$colsample_bytree,
-    objective = "binary:logistic",
-    eval_metric = "auc",
-    nthread = detectCores() - 1
+    lambda = 1,
+    alpha = 0,
+    objective = "reg:squarederror",
+    eval_metric = "rmse",
+    nthread = detectCores() - 3
   )
   
   xgb.cv.model <- xgb.cv(
     params = params,
     data = dtrain,
     nrounds = 5000,
-    nfold = 5,
+    nfold = 10,
     showsd = TRUE,
-    metrics = "auc",
-    stratified = TRUE,
+    metrics = "rmse",
+    stratified = FALSE,
     verbose = TRUE,
     print_every_n = 10L,
     early_stopping_rounds = 100
@@ -232,13 +216,14 @@ for(name in names(data_list_imp)){
   cat("Best nrounds for", name, ":", best_nrounds, "\n")
   best_params_list[[name]] <- list(
     bestTune = best_params,
-    best_nrounds = best_nrounds
+    best_nrounds = best_nrounds,
+    best_rmse = min(xgb.cv.model$evaluation_log$test_rmse_mean, na.rm = TRUE)
   )
   
   
   final_model <- xgboost(
     data = X_train_mat,
-    label = as.numeric(y_train) - 1,
+    label = y_train,
     max.depth = best_params$max_depth,
     eta = best_params$eta,
     nrounds = best_nrounds,
@@ -246,27 +231,29 @@ for(name in names(data_list_imp)){
     min_child_weight = best_params$min_child_weight,
     subsample = best_params$subsample,
     colsample_bytree = best_params$colsample_bytree,
-    objective = "binary:logistic",
-    eval_metric = "auc",
+    lambda = 1,
+    alpha = 0,
+    objective = "reg:squarederror",
+    eval_metric = "rmse",
     verbose = 0,
-    nthread = detectCores() - 1
+    nthread = detectCores() - 3
   )
   
   importance_matrix <- xgb.importance(feature_names = colnames(X_train_mat), model = final_model)
   
   importance_matrix$OriginalFeature <- sapply(importance_matrix$Feature, function(x) {
-    matched <- predictors[sapply(predictors, function(p) grepl(p, x))]
+    matched <- predictors[sapply(predictors, function(p) grepl(p, x, fixed = TRUE))]
     if(length(matched) > 0) matched[1] else x
   })
   
   importance_summary <- importance_matrix %>%
     group_by(OriginalFeature) %>%
-    summarise(TotalGain = sum(Gain)) %>%
+    summarise(TotalGain = sum(Gain), .groups = "drop") %>%
     arrange(desc(TotalGain))
   
   write.csv(importance_summary, file = paste0("XGB_importance_", name, ".csv"), row.names = FALSE)
   write.csv(importance_matrix, file = paste0("XGB_importance_c_", name, ".csv"), row.names = FALSE)
-  
+  # 
   pdf(file = paste0("XGB_importance_", name, ".pdf"), width = 10, height = 8)
   importance_plot <- importance_matrix[order(-importance_matrix$Gain), ]
   xgb.plot.importance(importance_plot, rel_to_first = TRUE, xlab = "Relative Gain",
@@ -277,6 +264,7 @@ for(name in names(data_list_imp)){
 stopCluster(myCl)
 saveRDS(best_params_list, file = "best_params_list.rds")
 
+
 # 3.1 XGBoost - RFE ----
 library(xgboost)
 library(parallel)
@@ -286,30 +274,25 @@ myCl <- makeCluster(detectCores() - 1)
 registerDoParallel(myCl)
 set.seed(123)
 
-predictors <- c("sex","age","ethnicity","work","marriage","education","alco",
-                "smk","sport","dNa","mental","Fhis_hype","hype_duration_5",
-                "dbp_arv","sbp_arv","bmi","HR","AF","cvd","hf",
-                "stroke_w_o_TIA","DM","ckdepi","ua","dyslipidemia","drug_time")
 best_params_list <- readRDS("best_params_list.rds")
 
 rfe_results <- list()
-for(drug_name in names(data_list_imp)){
+for(drug_name in names(data_list)){
   cat("Running RFE for:", drug_name, "\n")
   
-  df <- data_list_imp[[drug_name]]
-  y_train <- df$sbp_control_bad
-  X_train <- df[, predictors]
-  X_train_mat <- model.matrix(~ . -1, data = X_train)
+  df <- data_list[[name]] 
+  y_train <- df[["sbpTTR1"]]
+  X_train <- df[, predictors] 
+  X_train_mat <- model.matrix(~ . -1, data = X_train) 
   
   bestTune <- best_params_list[[drug_name]]$bestTune
   best_nrounds <- best_params_list[[drug_name]]$best_nrounds
   
   remaining_features <- colnames(X_train_mat)
-  auc_history <- c()
+  rmse_history <- c()
   removed_order <- c()
   
   repeat {
-    # DMatrix
     dtrain <- xgb.DMatrix(data = X_train_mat[, remaining_features, drop = FALSE],
                           label = y_train)
     cv <- xgb.cv(
@@ -320,19 +303,22 @@ for(drug_name in names(data_list_imp)){
         min_child_weight = bestTune$min_child_weight,
         subsample = bestTune$subsample,
         colsample_bytree = bestTune$colsample_bytree,
-        objective = "binary:logistic",
-        eval_metric = "auc",
-        nthread = detectCores() - 1
-      ),
+        lambda = 1,
+        alpha = 0,
+        objective = "reg:squarederror",
+        eval_metric = "rmse",
+        nthread = detectCores() - 3),
       data = dtrain,
       nrounds = best_nrounds,
-      nfold = 5,
-      stratified = TRUE,
+      nfold = 10,
+      stratified = FALSE,
       verbose = 0,
       early_stopping_rounds = 50
     )
     
-    auc_history <- c(auc_history, max(cv$evaluation_log$test_auc_mean))
+    current_rmse <- min(cv$evaluation_log$test_rmse_mean, na.rm = TRUE)
+    rmse_history <- c(rmse_history, current_rmse)
+    if(length(remaining_features) <= 1) break
     
     model <- xgboost(
       data = dtrain,
@@ -343,27 +329,30 @@ for(drug_name in names(data_list_imp)){
       min_child_weight = bestTune$min_child_weight,
       subsample = bestTune$subsample,
       colsample_bytree = bestTune$colsample_bytree,
-      objective = "binary:logistic",
-      eval_metric = "auc",
+      lambda = 1,
+      alpha = 0,
+      objective = "reg:squarederror",
+      eval_metric = "rmse",
       verbose = 0,
-      nthread = detectCores() - 1
+      nthread = detectCores() - 3
     )
+    
     
     importance_matrix <- xgb.importance(feature_names = remaining_features, model = model)
     min_gain_feat <- importance_matrix$Feature[which.min(importance_matrix$Gain)]
     
-    if(length(remaining_features) <= 2) break
     remaining_features <- setdiff(remaining_features, min_gain_feat)
     removed_order <- c(removed_order, min_gain_feat)
     
-    cat("Removed:", min_gain_feat, "Remaining features:", length(remaining_features),
-        "Current CV AUC:", round(tail(auc_history,1),4), "\n")
+    cat("Removed:", min_gain_feat,
+        "Remaining features:", length(remaining_features),
+        "Current CV RMSE:", round(tail(rmse_history, 1), 4), "\n")
   }
   removed_order <- c(removed_order, remaining_features)
   
   rfe_results[[drug_name]] <- list(
     final_features = remaining_features,
-    auc_history = auc_history,
+    rmse_history = rmse_history,
     removed_order = removed_order
   )
 }
@@ -375,8 +364,9 @@ saveRDS(rfe_results, file = "xgb_rfe_results_dynamicTune.rds")
 library(xgboost)
 library(dplyr)
 library(Ckmeans.1d.dp)
-drug_names <- c("ACEi", "beta", "CCB", "diuretic")
 
+rfe_results <- readRDS("xgb_rfe_results_dynamicTune.rds")
+drug_names <- c("ACEi", "beta", "CCB", "diuretic")
 importance_summary_list <- list()
 
 for(drug in drug_names){
@@ -384,25 +374,21 @@ for(drug in drug_names){
   importance_summary_list[[drug]] <- imp_df
 }
 
-
 for(drug_name in drug_names){
   cat("Plotting RFE for:", drug_name, "\n")
-  feature_order <- switch(drug_name,
-                          "ACEi" = gain_ACEi,
-                          "beta" = gain_beta,
-                          "CCB" = gain_CCB,
-                          "diuretic" = gain_diuretic)
-  
   
   tmp_gain <- importance_summary_list[[drug_name]]$Gain
   names(tmp_gain) <- importance_summary_list[[drug_name]]$Feature
+  feature_order <- names(tmp_gain) 
+  
   barplot_height <- tmp_gain[feature_order]
-  barplot_height <- barplot_height[!is.na(barplot_height)]
-  feature_order <- names(barplot_height) 
   
-  auc_history <- rfe_results[[drug_name]]$auc_history
-  x_vals <- seq(from = length(barplot_height), to = length(barplot_height) - length(auc_history) + 1, by = -1)
+  rmse_history <- rfe_results[[drug_name]]$rmse_history
+  x_vals <- seq( from = length(barplot_height),
+                 by = -1,
+                 length.out = length(barplot_height))
   
+  # importance bar ----
   pdf(file = paste0("RFE_XGB_", drug_name, ".pdf"), width = 10, height = 8)
   par(mar = c(10, 4, 4, 4))  
   bar_positions <- barplot(barplot_height,
@@ -415,7 +401,7 @@ for(drug_name in drug_names){
        y = par("usr")[3] - max(barplot_height)*0.05, 
        labels = feature_order, 
        srt = 45,  
-       adj = 1,   
+       adj = 1,   # 右对齐
        xpd = TRUE, 
        cex = 0.8)
   
@@ -426,44 +412,97 @@ for(drug_name in drug_names){
        col = "black", 
        cex = 1)
   
-  par(new = TRUE)
-  plot(x_vals, auc_history,
-       type = "p", pch = 16, col = "black",
-       axes = FALSE, xlab = "", ylab = "",
-       ylim = c(min(auc_history)*0.95, max(auc_history)*1.05))
-  axis(side = 4, col.axis = "black", cex.axis = 0.8)
-  mtext("RFE AUROC", side = 4, line = 2.5, col = "black")
+  ##  RMSE 
+  point_positions <- bar_positions[seq_along(rmse_history)]
   
-  suggestion_strictness <- 0.05
-  if(!is.null(suggestion_strictness)){
-    tmp.median.AUROCs <- auc_history
-    for(i in suggestion_strictness){
-      AUC_cutoff <- ((1 - i) * (max(tmp.median.AUROCs) - min(tmp.median.AUROCs))) + min(tmp.median.AUROCs)
-      feature_cutoff <- max(which(tmp.median.AUROCs >= AUC_cutoff)) + 0.5
+  par(new = TRUE)
+  plot(
+    point_positions,rmse_history,
+    type = "p", pch = 16, col = "black",
+    axes = FALSE,
+    xlab = "", ylab = "",
+    xlim = range(bar_positions),
+    ylim = c(
+      min(rmse_history, na.rm = TRUE) * 0.95,
+      max(rmse_history, na.rm = TRUE) * 1.05
+    )
+  )
+  
+  axis(side = 4, col.axis = "black", cex.axis = 0.8)
+  mtext("RFE RMSE", side = 4, line = 2.5, col = "black")
+  
+  suggestion_strictness <- c(0.05, 0.10)
+  
+  if (!is.null(suggestion_strictness)) {
+    
+    rmse_vec <- as.numeric(rmse_history)
+    rmse_vec <- rmse_vec[is.finite(rmse_vec)]
+    
+    if (length(rmse_vec) > 0) {
       
-      abline(v = feature_cutoff, col = "red", lty = 2)
-      tmp.cutoff.msg <- paste("Strictness:", round(i, 2))
+      # 平滑 RMSE
+      k <- ceiling(length(rmse_vec) * 0.10)
+      if (k %% 2 == 0) k <- k + 1
+      if (k < 3) k <- 3
       
-      tmp.strictness.bg <- paste(rep("-", nchar(tmp.cutoff.msg) - 2), collapse = "")
-      mtext(text = tmp.strictness.bg,
+      if (k > length(rmse_vec)) {
+        k <- if (length(rmse_vec) %% 2 == 1) {
+          length(rmse_vec)
+        } else {
+          length(rmse_vec) - 1
+        }
+        if (k < 1) k <- 1
+      }
+      
+      rmse_smooth <- if (k == 1) {
+        rmse_vec
+      } else {
+        stats::runmed(rmse_vec, k = k, endrule = "median")
+      }
+      
+      RMSE_min <- min(rmse_smooth, na.rm = TRUE)
+      RMSE_max <- max(rmse_smooth, na.rm = TRUE)
+      
+      rmse_scan <- rev(rmse_smooth)
+      pos_scan  <- rev(point_positions)
+      
+      for (i in suggestion_strictness) {
+        RMSE_cutoff <- RMSE_min + i * (RMSE_max - RMSE_min)
+        ok <- which(rmse_scan <= RMSE_cutoff)
+        if (length(ok) > 0) {
+          idx_cut <- ok[1]
+          vline_x <- pos_scan[idx_cut]
+          abline(v = vline_x, col = "red", lty = 2)
+          
+          tmp.cutoff.msg <- paste0("Tolerance: ", round(i, 2))
+          tmp.strictness.bg <- paste(rep("-", nchar(tmp.cutoff.msg) - 2), collapse = "")
+          
+          mtext(
+            text = tmp.strictness.bg,
             side = 3,
-            at = feature_cutoff,
+            at = vline_x,
             line = -12,
             cex = 0.8,
             col = "white",
             padj = 0.56,
             las = 2,
             family = "mono",
-            font = 2)
-      mtext(text = tmp.cutoff.msg,
+            font = 2
+          )
+          
+          mtext(
+            text = tmp.cutoff.msg,
             side = 3,
-            at = feature_cutoff,
+            at = vline_x,
             line = -12,
             cex = 0.8,
             col = "red",
             las = 2,
             family = "mono",
-            font = 2)
+            font = 2
+          )
+        }
+      }
     }
   }
   dev.off()
@@ -495,7 +534,7 @@ normalize_data <- function(df, predictors){
   return(df_num)
 }
 
-run_sivs_for_all <- function(data_list, predictors, iter.count = 100, nfolds = 10){
+run_sivs_for_all <- function(data_list, predictors, iter.count = 1000, nfolds = 5){
   results <- list()
   
   for(drug in names(data_list)){
@@ -528,7 +567,7 @@ run_sivs_for_all <- function(data_list, predictors, iter.count = 100, nfolds = 1
   return(results)
 }
 
-sivs_results_all <- run_sivs_for_all(data_list_imp, predictors)
+sivs_results_all <- run_sivs_for_all(data_list, predictors)
 
 merge_sivs_results <- function(sivs_results_all){
   merged_list <- list()
@@ -563,50 +602,32 @@ merge_sivs_results <- function(sivs_results_all){
 sivs_summary_df <- merge_sivs_results(sivs_results_all)
 write.csv(sivs_summary_df,"sivs.csv")
 
-for(drug_name in names(data_list_imp)) {
-  
-  df <- data_list_imp[[drug_name]]
-  formula_str <- paste("sbp_control_bad ~", paste(predictors, collapse = " + "))
-  model_std <- glm(as.formula(formula_str), data = df, family = binomial)
-  
-  res_std <- broom::tidy(model_std) %>%
-    mutate(x = statistic^2) %>%
-    filter(term != "(Intercept)")
-  res_std$var_base <- sapply(res_std$term, function(t) {
-    matched <- predictors[sapply(predictors, function(p) grepl(p, t))]
-    if(length(matched) > 0) matched[1] else t
-  })
-  
-  importance_summary <- res_std %>%
-    group_by(var_base) %>%
-    summarise(TotalImportance = sum(x, na.rm = TRUE)) %>%
-    arrange(desc(TotalImportance))
-  
-  write.csv(importance_summary, file = paste0("logi_", drug_name, ".csv"), row.names = FALSE)
-  
-}
-
 # 5. importance  ----
 load("boruta.Rdata")
 XGB_importance_CCB <- read_csv("XGB_importance_CCB.csv")
 XGB_importance_ACEi <- read_csv("XGB_importance_ACEi.csv")
 XGB_importance_beta <- read_csv("XGB_importance_beta.csv")
 XGB_importance_diuretic <- read_csv("XGB_importance_diuretic.csv")
-logi_ACEi <- read_csv("logi_ACEi.csv")
-logi_CCB <- read_csv("logi_CCB.csv")
-logi_diuretic <- read_csv("logi_diuretic.csv")
-logi_beta <- read_csv("logi_beta.csv")
+sivs_summary_df <- read_csv("sivs.csv")
+sivs_ACEi <- sivs_summary_df %>%
+  filter(Drug == "ACEi")
+sivs_beta <- sivs_summary_df %>%
+  filter(Drug == "beta") 
+sivs_CCB <- sivs_summary_df %>%
+  filter(Drug == "CCB")
+sivs_diuretic <- sivs_summary_df %>%
+  filter(Drug == "diuretic")
 
 
-merge_four_importance <- function(boruta_df, logi_df, xgb_df) {
+merge_four_importance <- function(boruta_df, sivs_df, xgb_df) {
   
   # Boruta
   boruta_clean <- dplyr::select(boruta_df, Variable, importance) %>%
     dplyr::rename(Feature = Variable, Boruta_importance = importance)
   
-  # SIVS
-  logi_clean <- dplyr::select(logi_df, var_base, TotalImportance) %>%
-    dplyr::rename(Feature = var_base, Logi_importance = TotalImportance)
+  # sivs
+  sivs_clean <- dplyr::select(sivs_df, Feature, VIMP) %>%
+    dplyr::rename(Feature = Feature, sivs_importance = VIMP)
   
   # XGBoost
   xgb_clean <- dplyr::select(xgb_df, OriginalFeature, TotalGain) %>%
@@ -614,7 +635,7 @@ merge_four_importance <- function(boruta_df, logi_df, xgb_df) {
   
   # merged
   merged <- boruta_clean %>%
-    dplyr::full_join(logi_clean, by = "Feature") %>%
+    dplyr::full_join(sivs_clean, by = "Feature") %>%
     dplyr::full_join(xgb_clean, by = "Feature") 
 
   return(merged)
@@ -622,55 +643,76 @@ merge_four_importance <- function(boruta_df, logi_df, xgb_df) {
 
 
 merged_all_list <- list(
-  ACEi     = merge_four_importance(boruta_results$ACEi, logi_ACEi, XGB_importance_ACEi),
-  beta     = merge_four_importance(boruta_results$beta, logi_beta, XGB_importance_beta),
-  CCB      = merge_four_importance(boruta_results$CCB, logi_CCB, XGB_importance_CCB),
-  diuretic = merge_four_importance(boruta_results$diuretic, logi_diuretic, XGB_importance_diuretic)
+  ACEi     = merge_four_importance(boruta_results$ACEi, sivs_ACEi, XGB_importance_ACEi),
+  beta     = merge_four_importance(boruta_results$beta, sivs_beta, XGB_importance_beta),
+  CCB      = merge_four_importance(boruta_results$CCB, sivs_CCB, XGB_importance_CCB),
+  diuretic = merge_four_importance(boruta_results$diuretic, sivs_diuretic, XGB_importance_diuretic)
 )
 
-merged_all <- dplyr::bind_rows(
-  lapply(names(merged_all_list), function(drug) {
-    merged_all_list[[drug]] %>% dplyr::mutate(Drug = drug)
+merged_all_list_scaled <- lapply(merged_all_list, function(df) {
+  df %>%
+    mutate(
+      across(
+        c("Boruta_importance","sivs_importance","XGB_importance"),
+        ~ (.x - min(.x, na.rm = TRUE)) / 
+          (max(.x, na.rm = TRUE) - min(.x, na.rm = TRUE))
+      )
+    )
+})
+
+
+importance_cols <- c(
+  "Boruta_importance",
+  "sivs_importance",
+  "XGB_importance"
+)
+
+drug_names <- c("ACEi", "beta", "CCB", "diuretic")
+
+plot_df <- bind_rows(
+  lapply(drug_names, function(drug) {
+    merged_all_list_scaled[[drug]] %>%
+      mutate(Drug = drug)
   })
-)%>%
-  mutate(across(where(is.numeric), ~ tidyr::replace_na(.x, 0)))
-
-write.csv(merged_all,"importance_total.csv")
-
-
-
-merged_long <- merged_all %>%
-  pivot_longer(
-    cols = c(Boruta_importance, Logi_importance , XGB_importance),
-    names_to = "Importance_Type",
-    values_to = "Importance"
-  ) 
-
-merged_long <- merged_long %>%
-  group_by(Drug, Importance_Type) %>%
+) %>%
   mutate(
-    minv = min(Importance, na.rm = TRUE),
-    maxv = max(Importance, na.rm = TRUE),
-    Importance_norm = if_else(
-      maxv > minv,
-      (Importance - minv) / (maxv - minv),
-      0
+    Drug = factor(Drug, levels = drug_names),
+    TotalImportance = rowSums(
+      across(all_of(importance_cols)),
+      na.rm = TRUE
     )
   ) %>%
-  ungroup() %>%
-  dplyr::select(-minv, -maxv)
+  pivot_longer(
+    cols = all_of(importance_cols),
+    names_to = "Importance_Type",
+    values_to = "Importance"
+  ) %>%
+  mutate(
+    Importance_Type = factor(
+      Importance_Type,
+      levels = c("Boruta_importance", "sivs_importance", "XGB_importance")
+    ),
+    Feature_facet = paste(Feature, Drug, sep = "___")
+  )
 
-merged_long <- merged_long %>%
-  group_by(Drug, Feature) %>%
-  mutate(Total_Imp_norm = sum(Importance_norm, na.rm = TRUE)) %>%
-  ungroup() %>%
-  arrange(Drug, desc(Total_Imp_norm)) %>%
-  mutate(Feature = factor(Feature, levels = unique(Feature)))
+feature_levels <- plot_df %>%
+  distinct(Drug, Feature, Feature_facet, TotalImportance) %>%
+  arrange(Drug, TotalImportance) %>%
+  pull(Feature_facet)
 
-ggplot(merged_long, aes(x = Importance_Type, y = Feature, fill = Importance_norm)) +
+plot_df <- plot_df %>%
+  mutate(
+    Feature_facet = factor(Feature_facet, levels = feature_levels)
+  )
+
+
+p <- ggplot(plot_df,aes(x = Importance_Type, y = Feature_facet, fill = Importance)) +
+  scale_y_discrete(
+    labels = function(x) sub("___.*$", "", x)
+  ) +
   geom_tile(color = "white") +
   facet_wrap(~Drug, scales = "free_y") +
-  scale_fill_gradient(low = "white", high = "steelblue", na.value = "grey90") +
+  scale_fill_gradient(low = "white", high = "steelblue", na.value = "white") +
   theme_minimal() +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
@@ -685,4 +727,32 @@ ggplot(merged_long, aes(x = Importance_Type, y = Feature, fill = Importance_norm
     fill = "Normalized Importance (0-1)"
   )
 
-ggsave("feature_importance_heatmap.pdf", width = 12, height = 8)
+ggsave(
+  filename = "feature_importance_heatmap.pdf",
+  plot = p,
+  width = 12,
+  height = 8
+)
+
+merged_all_list_scaled <- lapply(merged_all_list_scaled, function(df) {
+  df %>%
+    mutate(
+      across(
+        any_of(importance_cols),
+        ~ ifelse(is.na(.x), 0, .x)
+      )
+    )
+})
+
+merged_all_list_scaled <- lapply(merged_all_list_scaled, function(df) {
+  df %>%
+    mutate(
+      Total_importance = rowSums(
+        across(all_of(importance_cols)),
+        na.rm = TRUE
+      )
+    ) %>%
+    arrange(desc(Total_importance))
+})
+
+save(merged_all_list_scaled, file = "merged_all_list_scaled.Rdata")
